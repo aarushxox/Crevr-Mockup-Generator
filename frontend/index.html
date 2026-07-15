@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Crevr — Mockup Generator</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
+  <style>
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background-color: #ffffff;
+      color: #111111;
+    }
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #f9f9f9;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #e2e8f0;
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #cbd5e1;
+    }
+  </style>
+</head>
+<body class="overflow-hidden h-screen w-screen">
+  <div id="root" class="h-full w-full"></div>
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+    const API_BASE = "http://127.0.0.1:8000/api";
+
+    function App() {
+      const [templates, setTemplates] = useState([]);
+      const [activeCategory, setActiveCategory] = useState("All");
+      const [selectedTemplate, setSelectedTemplate] = useState(null);
+      const [design, setDesign] = useState(null);
+      const [history, setHistory] = useState([]);
+      const [isRendering, setIsRendering] = useState(false);
+      const [renderResult, setRenderResult] = useState(null);
+      const [errorMsg, setErrorMsg] = useState(null);
+      const [notification, setNotification] = useState(null);
+      const [showHistory, setShowHistory] = useState(false);
+
+      const [rotation, setRotation] = useState(0);
+      const [scale, setScale] = useState(1.0);
+      const [opacity, setOpacity] = useState(100);
+      const [colorCorrect, setColorCorrect] = useState(true);
+      const [featherRadius, setFeatherRadius] = useState(3);
+      const [exportFormat, setExportFormat] = useState("png");
+
+      const canvasRef = useRef(null);
+      const fabricCanvas = useRef(null);
+      const designImageObj = useRef(null);
+
+      useEffect(() => {
+        fetchTemplates();
+        fetchHistory();
+      }, []);
+
+      const fetchTemplates = async (cat = "") => {
+        try {
+          const res = await fetch(`${API_BASE}/templates${cat ? '?category=' + cat : ''}`, {
+            method: 'POST'
+          });
+          const data = await res.json();
+          if (data.templates) {
+            setTemplates(data.templates);
+          }
+        } catch (err) {
+          showToast("Error loading templates from gateway", "error");
+        }
+      };
+
+      const fetchHistory = async () => {
+        try {
+          const res = await fetch(`${API_BASE}/history`);
+          const data = await res.json();
+          if (data.history) {
+            setHistory(data.history);
+          }
+        } catch (err) {
+          console.error("Error loading history:", err);
+        }
+      };
+
+      const showToast = (msg, type = "info") => {
+        setNotification({ text: msg, type });
+        setTimeout(() => setNotification(null), 4000);
+      };
+
+      const handleSelectTemplate = async (tmpl) => {
+        setSelectedTemplate(tmpl);
+        setDesign(null);
+        setRenderResult(null);
+        setErrorMsg(null);
+        setRotation(0);
+        setScale(1.0);
+        setTimeout(() => {
+          initFabricCanvas(tmpl);
+        }, 100);
+      };
+
+      const initFabricCanvas = (tmpl) => {
+        if (fabricCanvas.current) {
+          fabricCanvas.current.dispose();
+        }
+
+        const container = document.getElementById("canvas-container");
+        const cw = container.clientWidth;
+        const ch = container.clientHeight;
+
+        const canvas = new fabric.Canvas("editor-canvas", {
+          width: cw,
+          height: ch,
+          backgroundColor: "#f8fafc",
+          selection: false
+        });
+        fabricCanvas.current = canvas;
+
+        const assetUrl = `${API_BASE}/templates/${tmpl.id}/asset/base.png`;
+        fabric.Image.fromURL(assetUrl, (img) => {
+          const scaleFactor = Math.min(cw / img.width, ch / img.height) * 0.95;
+          img.set({
+            scaleX: scaleFactor,
+            scaleY: scaleFactor,
+            left: (cw - img.width * scaleFactor) / 2,
+            top: (ch - img.height * scaleFactor) / 2,
+            selectable: false,
+            evented: false,
+            hoverCursor: "default"
+          });
+          canvas.add(img);
+          canvas.sendToBack(img);
+
+          const corners = tmpl.design_zone_corners;
+          if (corners && corners.length === 4) {
+            const mappedPts = corners.map(pt => ({
+              x: pt[0] * scaleFactor + img.left,
+              y: pt[1] * scaleFactor + img.top
+            }));
+            const xs = mappedPts.map(p => p.x);
+            const ys = mappedPts.map(p => p.y);
+            const minX = Math.min(...xs);
+            const maxX = Math.max(...xs);
+            const minY = Math.min(...ys);
+            const maxY = Math.max(...ys);
+
+            const boundingBox = new fabric.Rect({
+              left: minX,
+              top: minY,
+              width: maxX - minX,
+              height: maxY - minY,
+              fill: "rgba(33, 150, 243, 0.05)",
+              stroke: "#2196F3",
+              strokeWidth: 1,
+              strokeDashArray: [4, 4],
+              selectable: false,
+              evented: false
+            });
+            canvas.add(boundingBox);
+          }
+          canvas.renderAll();
+        }, { crossOrigin: 'anonymous' });
+
+        canvas.on('object:moving', handleObjectTransform);
+        canvas.on('object:scaling', handleObjectTransform);
+        canvas.on('object:rotating', handleObjectTransform);
+      };
+
+      const handleObjectTransform = (e) => {
+        const obj = e.target;
+        if (!obj || !selectedTemplate) return;
+        let rot = obj.angle || 0;
+        if (rot > 180) rot -= 360;
+        const limits = selectedTemplate.rotation_limits_deg;
+        if (limits && limits.length === 2 && (limits[0] !== 0 || limits[1] !== 0)) {
+          if (rot < limits[0]) {
+            rot = limits[0];
+            obj.set('angle', rot);
+          } else if (rot > limits[1]) {
+            rot = limits[1];
+            obj.set('angle', rot);
+          }
+        }
+        setRotation(Math.round(rot));
+        setScale(parseFloat((obj.scaleX || 1.0).toFixed(2)));
+      };
+
+      const handleFileUpload = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const formData = new FormData();
+        formData.append("file", file);
+
+        try {
+          showToast("Uploading design...", "info");
+          const res = await fetch(`${API_BASE}/designs/upload`, {
+            method: "POST",
+            body: formData
+          });
+          if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || "Upload failed");
+          }
+          const data = await res.json();
+          setDesign(data);
+          showToast("Design uploaded successfully!", "success");
+          placeDesignOnCanvas(data);
+        } catch (err) {
+          setErrorMsg(err.message);
+          showToast(err.message, "error");
+        }
+      };
+
+      const placeDesignOnCanvas = (designData) => {
+        const canvas = fabricCanvas.current;
+        if (!canvas || !selectedTemplate) return;
+        if (designImageObj.current) {
+          canvas.remove(designImageObj.current);
+        }
+
+        const designUrl = `${API_BASE}/designs/${designData.design_id}/file`;
+        fabric.Image.fromURL(designUrl, (img) => {
+          const corners = selectedTemplate.design_zone_corners;
+          const bgImg = canvas.getObjects('image')[0];
+          let left = canvas.width / 2;
+          let top = canvas.height / 2;
+          let zoneWidth = 200;
+
+          if (bgImg && corners && corners.length === 4) {
+            const scaleFactor = bgImg.scaleX;
+            const mappedPts = corners.map(pt => ({
+              x: pt[0] * scaleFactor + bgImg.left,
+              y: pt[1] * scaleFactor + bgImg.top
+            }));
+            const xs = mappedPts.map(p => p.x);
+            const ys = mappedPts.map(p => p.y);
+            const minX = Math.min(...xs);
+            const maxX = Math.max(...xs);
+            const minY = Math.min(...ys);
+            const maxY = Math.max(...ys);
+
+            left = (minX + maxX) / 2;
+            top = (minY + maxY) / 2;
+            zoneWidth = maxX - minX;
+          }
+
+          const designScale = (zoneWidth * 0.75) / img.width;
+          img.set({
+            left: left,
+            top: top,
+            originX: "center",
+            originY: "center",
+            scaleX: designScale,
+            scaleY: designScale,
+            transparentCorners: false,
+            borderColor: '#2196F3',
+            cornerColor: '#2196F3',
+            cornerSize: 8,
+            cornerStyle: 'circle',
+            hasRotatingPoint: selectedTemplate.category === "apparel"
+          });
+          img.setControlsVisibility({ ml: false, mr: false, mt: false, mb: false });
+          canvas.add(img);
+          canvas.setActiveObject(img);
+          designImageObj.current = img;
+          setScale(parseFloat(designScale.toFixed(2)));
+          canvas.renderAll();
+        }, { crossOrigin: 'anonymous' });
+      };
+
+      const handleRemoveBg = async () => {
+        if (!design) return;
+        try {
+          showToast("Removing background...", "info");
+          const res = await fetch(`${API_BASE}/designs/${design.design_id}/remove-bg`, { method: "POST" });
+          const data = await res.json();
+          if (data.status === "success") {
+            showToast("Background removed cleanly!", "success");
+            placeDesignOnCanvas(data);
+          } else {
+            showToast("Background removal failed", "error");
+          }
+        } catch (err) {
+          showToast("Error executing background removal", "error");
+        }
+      };
+
+      const handleRender = async () => {
+        if (!selectedTemplate || !design || !designImageObj.current) {
+          showToast("Please upload a design first", "error");
+          return;
+        }
+
+        setIsRendering(true);
+        setErrorMsg(null);
+        setRenderResult(null);
+
+        const canvas = fabricCanvas.current;
+        const bgImg = canvas.getObjects('image')[0];
+        const designObj = designImageObj.current;
+        const corners = selectedTemplate.design_zone_corners;
+        let tx = 0, ty = 0;
+        let designScaleRatio = 1.0;
+
+        if (bgImg && corners && corners.length === 4) {
+          const scaleFactor = bgImg.scaleX;
+          const mappedPts = corners.map(pt => ({
+            x: pt[0] * scaleFactor + bgImg.left,
+            y: pt[1] * scaleFactor + bgImg.top
+          }));
+          const xs = mappedPts.map(p => p.x);
+          const ys = mappedPts.map(p => p.y);
+          const minX = Math.min(...xs);
+          const maxX = Math.max(...xs);
+          const minY = Math.min(...ys);
+          const maxY = Math.max(...ys);
+
+          const zoneCenterX = (minX + maxX) / 2;
+          const zoneCenterY = (minY + maxY) / 2;
+          const zoneWidthBase = (maxX - minX) / scaleFactor;
+
+          tx = (designObj.left - zoneCenterX) / scaleFactor;
+          ty = (designObj.top - zoneCenterY) / scaleFactor;
+
+          const initialScale = (zoneWidthBase * scaleFactor * 0.75) / designObj.width;
+          designScaleRatio = designObj.scaleX / initialScale;
+        }
+
+        const renderPayload = {
+          template_id: selectedTemplate.id,
+          design_id: design.design_id,
+          transform: {
+            x: tx,
+            y: ty,
+            scale: designScaleRatio,
+            rotation: designObj.angle || 0
+          },
+          export: {
+            format: exportFormat,
+            resolution: 300,
+            dpi: 300,
+            color_correct: colorCorrect,
+            feather_radius: featherRadius
+          }
+        };
+
+        try {
+          showToast("Rendering photo-realistic mockup...", "info");
+          const res = await fetch(`${API_BASE}/render`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(renderPayload)
+          });
+          if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || "Rendering failed");
+          }
+          const data = await res.json();
+          setRenderResult(`${API_BASE}/render/${data.job_id}/download`);
+          showToast("Mockup rendered successfully!", "success");
+          fetchHistory();
+        } catch (err) {
+          setErrorMsg(err.message);
+          showToast(err.message, "error");
+        } finally {
+          setIsRendering(false);
+        }
+      };
+
+      const handleDeleteHistory = async (id) => {
+        try {
+          await fetch(`${API_BASE}/history/${id}`, { method: 'DELETE' });
+          fetchHistory();
+          showToast("History item deleted", "success");
+        } catch (err) {
+          console.error("Delete failed:", err);
+        }
+      };
+
+      const filteredTemplates = templates.filter(t => activeCategory === "All" || t.category === activeCategory);
+
+      return (
+        <div class="h-full w-full flex flex-col bg-white overflow-hidden text-sm">
+          <header class="h-14 border-b border-gray-100 px-6 flex items-center justify-between flex-shrink-0">
+            <div class="flex items-center space-x-3">
+              <span class="text-xl font-bold tracking-tight text-gray-900 flex items-center">
+                <span class="bg-blue-600 text-white px-2 py-0.5 rounded mr-1.5 font-extrabold text-sm">C</span>
+                Crevr
+              </span>
+              <span class="text-xs text-gray-400 font-medium px-2 py-0.5 bg-gray-50 rounded">Local Composite Engine</span>
+            </div>
+            <div class="flex items-center space-x-3">
+              <button onClick={() => { setShowHistory(!showHistory); fetchHistory(); }} class="px-3 py-1.5 text-gray-600 hover:bg-gray-50 rounded-md font-medium transition flex items-center space-x-1">
+                <span>🕒</span> <span>History</span>
+              </button>
+              <a href="https://github.com/aarushxox/Crevr-Mockup-Generator" target="_blank" class="px-3 py-1.5 text-gray-600 hover:bg-gray-50 rounded-md font-medium transition flex items-center space-x-1">
+                <span>📦</span> <span>GitHub</span>
+              </a>
+            </div>
+          </header>
+
+          <div class="flex-1 flex overflow-hidden">
+            {!selectedTemplate ? (
+              <div class="flex-1 flex flex-col p-8 overflow-y-auto">
+                <div class="max-w-5xl mx-auto w-full">
+                  <h1 class="text-2xl font-bold text-gray-900 mb-2">Select Mockup Template</h1>
+                  <p class="text-gray-500 mb-6">Choose a template below to composite your custom artwork with high-fidelity displacement mappings.</p>
+
+                  <div class="flex space-x-2 mb-8">
+                    {["All", "apparel", "tech"].map(cat => (
+                      <button key={cat} onClick={() => setActiveCategory(cat)} class={`px-4 py-2 rounded-full font-medium transition text-xs capitalize ${activeCategory === cat ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>
+                        {cat === "All" ? "All Categories" : cat}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    {filteredTemplates.map(tmpl => (
+                      <div key={tmpl.id} onClick={() => handleSelectTemplate(tmpl)} class="border border-gray-100 rounded-lg overflow-hidden cursor-pointer hover:border-blue-400 hover:shadow-sm transition">
+                        <div class="aspect-square bg-gray-50 relative overflow-hidden flex items-center justify-center">
+                          <img src={`${API_BASE}/templates/${tmpl.id}/asset/base.png`} alt={tmpl.label} class="object-contain max-h-full max-w-full" />
+                        </div>
+                        <div class="p-4 border-t border-gray-50">
+                          <span class="text-xs font-semibold text-blue-600 uppercase tracking-wider">{tmpl.category}</span>
+                          <h3 class="font-bold text-gray-900 mt-1">{tmpl.label}</h3>
+                          <p class="text-xs text-gray-400 mt-1 capitalize">{tmpl.subtype} • Fold Scale: {tmpl.fold_intensity}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div class="flex-1 flex overflow-hidden">
+                <div class="w-80 border-r border-gray-100 bg-white flex flex-col flex-shrink-0">
+                  <div class="p-6 border-b border-gray-100">
+                    <button onClick={() => { setSelectedTemplate(null); setDesign(null); }} class="text-xs font-medium text-gray-500 hover:text-gray-900 flex items-center space-x-1">
+                      <span>←</span> <span>Templates</span>
+                    </button>
+                    <h2 class="text-base font-bold text-gray-900 mt-3">{selectedTemplate.label}</h2>
+                  </div>
+
+                  <div class="flex-1 overflow-y-auto p-6 space-y-6">
+                    <div>
+                      <h3 class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">1. Upload Design</h3>
+                      {!design ? (
+                        <label class="border-2 border-dashed border-gray-200 hover:border-blue-500 transition rounded-lg p-6 flex flex-col items-center justify-center cursor-pointer bg-gray-50/50">
+                          <span class="text-2xl mb-1">📤</span>
+                          <span class="font-medium text-gray-700 text-xs">Upload PNG/JPG/WebP</span>
+                          <span class="text-[10px] text-gray-400 mt-1">Drag and drop or browse</span>
+                          <input type="file" accept="image/*" onChange={handleFileUpload} class="hidden" />
+                        </label>
+                      ) : (
+                        <div class="space-y-3">
+                          <div class="flex items-center space-x-3 p-3 bg-gray-50 rounded-lg border border-gray-100">
+                            <span class="text-xl">🎨</span>
+                            <div class="flex-1 min-w-0">
+                              <p class="font-semibold text-gray-900 truncate text-xs">Design Ready</p>
+                              <p class="text-[10px] text-gray-400">{design.width}x{design.height} px</p>
+                            </div>
+                            <button onClick={() => { setDesign(null); if (fabricCanvas.current && designImageObj.current) fabricCanvas.current.remove(designImageObj.current); }} class="text-red-500 hover:text-red-700 text-xs">🗑️</button>
+                          </div>
+                          <button onClick={handleRemoveBg} class="w-full py-2 bg-gray-50 hover:bg-gray-100 text-gray-700 border border-gray-200 rounded-md font-medium text-xs transition flex items-center justify-center space-x-1.5">
+                            <span>🪄</span> <span>Auto Remove Background</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    {design && (
+                      <div class="space-y-3 border-t border-gray-50 pt-4">
+                        <h3 class="text-xs font-bold text-gray-400 uppercase tracking-wider">2. Transform Controls</h3>
+                        <p class="text-xs text-gray-400 leading-relaxed">Directly drag, rotate, and scale the design on the interactive canvas viewport.</p>
+                        <div class="grid grid-cols-2 gap-3 text-xs bg-gray-50/50 p-3 rounded-md">
+                          <div>
+                            <span class="text-gray-400">Rotation:</span>
+                            <span class="font-medium text-gray-800 ml-1">{rotation}°</span>
+                          </div>
+                          <div>
+                            <span class="text-gray-400">Scale factor:</span>
+                            <span class="font-medium text-gray-800 ml-1">{scale}x</span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    <div class="space-y-4 border-t border-gray-50 pt-4">
+                      <h3 class="text-xs font-bold text-gray-400 uppercase tracking-wider">3. Processing Settings</h3>
+                      <label class="flex items-center space-x-2.5 cursor-pointer">
+                        <input type="checkbox" checked={colorCorrect} onChange={(e) => setColorCorrect(e.target.checked)} class="rounded text-blue-600 focus:ring-blue-500 h-4 w-4 border-gray-300" />
+                        <div class="text-xs">
+                          <p class="font-medium text-gray-800">Match Lighting & Tone</p>
+                          <p class="text-[10px] text-gray-400">Harmonizes design to canvas brightness/hue in LAB space</p>
+                        </div>
+                      </label>
+
+                      <div>
+                        <div class="flex justify-between mb-1">
+                          <span class="text-xs font-medium text-gray-700">Edge Feathering</span>
+                          <span class="text-xs text-gray-400">{featherRadius} px</span>
+                        </div>
+                        <input type="range" min="0" max="15" value={featherRadius} onChange={(e) => setFeatherRadius(parseInt(e.target.value))} class="w-full h-1 bg-gray-100 rounded-lg appearance-none cursor-pointer" />
+                      </div>
+
+                      <div>
+                        <span class="text-xs font-medium text-gray-700 block mb-1.5">Export Format</span>
+                        <div class="flex bg-gray-100 p-0.5 rounded-md">
+                          {["png", "jpg", "webp"].map(fmt => (
+                            <button key={fmt} onClick={() => setExportFormat(fmt)} class={`flex-1 py-1 text-center text-xs font-semibold rounded capitalize transition ${exportFormat === fmt ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-900"}`}>
+                              {fmt}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="p-6 border-t border-gray-100 bg-gray-50/50">
+                    <button onClick={handleRender} disabled={isRendering || !design} class={`w-full py-3 bg-blue-600 text-white rounded-lg font-bold text-xs shadow-sm hover:bg-blue-700 transition flex items-center justify-center space-x-2 ${(isRendering || !design) ? "opacity-50 cursor-not-allowed" : ""}`}>
+                      {isRendering ? (
+                        <>
+                          <span class="animate-spin text-sm">🌀</span>
+                          <span>Compositing...</span>
+                        </>
+                      ) : (
+                        <>
+                          <span>⚡</span>
+                          <span>Render Photorealistic Mockup</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                <div class="flex-1 flex flex-col bg-gray-50 relative overflow-hidden">
+                  <div id="canvas-container" class="flex-1 relative flex items-center justify-center p-4">
+                    <canvas id="editor-canvas" class="shadow-md rounded-lg overflow-hidden border border-gray-200/50"></canvas>
+                  </div>
+
+                  {renderResult && (
+                    <div class="absolute inset-0 bg-white/95 flex flex-col items-center justify-center p-8 z-10">
+                      <div class="max-w-2xl w-full flex flex-col h-full">
+                        <div class="flex justify-between items-center mb-4">
+                          <h3 class="text-base font-bold text-gray-900 flex items-center space-x-1.5">
+                            <span class="text-green-500">✓</span> <span>High-Fidelity Composite Render Completed</span>
+                          </h3>
+                          <button onClick={() => setRenderResult(null)} class="text-gray-400 hover:text-gray-600 font-bold">Close</button>
+                        </div>
+                        <div class="flex-1 bg-gray-100 rounded-lg overflow-hidden flex items-center justify-center border border-gray-200 relative mb-6">
+                          <img src={renderResult} alt="Mockup Output" class="object-contain max-h-full max-w-full" />
+                        </div>
+                        <div class="flex space-x-3 justify-end">
+                          <button onClick={() => setRenderResult(null)} class="px-5 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold rounded-lg transition">Re-edit Layout</button>
+                          <a href={renderResult} download={`crevr_mockup.${exportFormat}`} class="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg transition shadow-sm text-center flex items-center space-x-1.5">
+                            <span>⬇</span> <span>Download High-Res ({exportFormat.toUpperCase()})</span>
+                          </a>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {notification && (
+            <div class={`fixed bottom-6 right-6 p-4 rounded-lg shadow-lg border text-xs font-semibold z-50 flex items-center space-x-2 transition ${notification.type === "success" ? "bg-green-50 border-green-200 text-green-800" : notification.type === "error" ? "bg-red-50 border-red-200 text-red-800" : "bg-blue-50 border-blue-200 text-blue-800"}`}>
+              <span>{notification.type === "success" ? "✓" : "ℹ"}</span>
+              <span>{notification.text}</span>
+            </div>
+          )}
+
+          {showHistory && (
+            <div class="fixed inset-y-0 right-0 w-96 bg-white shadow-2xl border-l border-gray-100 z-40 flex flex-col p-6">
+              <div class="flex justify-between items-center mb-6">
+                <h2 class="text-base font-bold text-gray-900">Past Composite Renders</h2>
+                <button onClick={() => setShowHistory(false)} class="text-gray-400 hover:text-gray-600 font-bold">✕</button>
+              </div>
+              <div class="flex-1 overflow-y-auto space-y-4">
+                {history.length === 0 ? (
+                  <p class="text-gray-400 text-center py-12">No render history found.</p>
+                ) : (
+                  history.map(item => (
+                    <div key={item.id} class="p-3 bg-gray-50 rounded-lg border border-gray-100 flex items-center justify-between">
+                      <div class="flex items-center space-x-3">
+                        <div class="w-12 h-12 bg-white rounded border border-gray-100 overflow-hidden flex items-center justify-center">
+                          <img src={item.output_url} alt="render" class="object-cover h-full w-full" />
+                        </div>
+                        <div>
+                          <p class="font-semibold text-gray-800 text-xs">Mockup #{item.id.slice(0, 8)}</p>
+                          <p class="text-[10px] text-gray-400">{new Date(item.created_at).toLocaleString()}</p>
+                        </div>
+                      </div>
+                      <div class="flex space-x-2">
+                        <a href={item.output_url} download class="p-1.5 bg-white hover:bg-gray-100 rounded text-gray-600 border border-gray-150 text-xs" title="Download">📥</a>
+                        <button onClick={() => handleDeleteHistory(item.id)} class="p-1.5 bg-white hover:bg-red-50 rounded text-red-500 border border-red-100 text-xs" title="Delete">🗑️</button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App />);
+  </script>
+</body>
+</html>
