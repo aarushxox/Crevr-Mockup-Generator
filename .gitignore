@@ -1,0 +1,10 @@
+node_modules/
+gateway/node_modules/
+frontend/node_modules/
+__pycache__/
+*.pyc
+data/designs/
+data/exports/
+data/crevr.db
+uvicorn_dev.log
+gateway_dev.log
