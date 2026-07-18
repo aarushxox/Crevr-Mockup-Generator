@@ -149,6 +149,22 @@ async def upload_design(file: UploadFile = File(...)):
     if not (is_png or is_jpg or is_webp):
         raise HTTPException(status_code=400, detail="Unsupported or corrupt image signature. Please upload PNG, JPG, or WebP.")
 
+    # Validate image using PIL without full decompression first to protect against zip bombs
+    from PIL import Image
+    import io
+    try:
+        img_pil = Image.open(io.BytesIO(content))
+        img_pil.verify()
+
+        # Verify dimensions on the verified image header
+        w, h = img_pil.size
+        if w > 8000 or h > 8000 or w * h > 64000000:
+            raise HTTPException(status_code=400, detail="Image dimensions exceed 8000x8000 pixels limit")
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=400, detail="Image corrupt or undecodable.")
+
     nparr = np.frombuffer(content, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
     if img is None:
@@ -249,6 +265,12 @@ def render_template_mockup(req: RenderRequest):
     if not os.path.exists(template_folder):
         raise HTTPException(status_code=404, detail="Mockup template not found")
 
+    meta_path = os.path.join(template_folder, "metadata.json")
+    if not os.path.exists(meta_path):
+        raise HTTPException(status_code=404, detail="Template metadata not found")
+    with open(meta_path, "r") as f:
+        metadata = json.load(f)
+
     design_img = None
     for ext in ["png", "jpg", "jpeg", "webp"]:
         path = os.path.join(UPLOAD_DIR, f"{req.design_id}.{ext}")
@@ -258,6 +280,60 @@ def render_template_mockup(req: RenderRequest):
 
     if design_img is None:
         raise HTTPException(status_code=404, detail="Design file not found")
+
+    # Missing alpha channel detection for apparel templates
+    if metadata.get("category") == "apparel":
+        has_alpha = design_img.shape[2] == 4 if len(design_img.shape) == 3 else False
+        is_fully_opaque = True
+        if has_alpha:
+            alpha_channel = design_img[:, :, 3]
+            if not np.all(alpha_channel == 255):
+                is_fully_opaque = False
+        if not has_alpha or is_fully_opaque:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "E1005",
+                    "message": "Missing alpha channel on a design meant to be transparent. Please run background removal or upload a transparent image."
+                }
+            )
+
+    # Enforce transform limits against metadata parameters
+    allow_rotation = metadata.get("allow_rotation", True)
+    rotation_limits = metadata.get("rotation_limits_deg")
+
+    # If allow_rotation is false, then rotation must be 0
+    if not allow_rotation and req.transform.rotation != 0.0:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "E3003",
+                "message": f"Rotation is not allowed for template: {req.template_id}"
+            }
+        )
+
+    # Check rotation limits if they are defined
+    if allow_rotation and rotation_limits and len(rotation_limits) == 2:
+        min_rot, max_rot = rotation_limits
+        # Allow a slight epsilon tolerance for floating-point inaccuracies
+        if not (min_rot - 0.01 <= req.transform.rotation <= max_rot + 0.01):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "E3003",
+                    "message": f"Rotation {req.transform.rotation} is out of bounds [{min_rot}, {max_rot}] for template: {req.template_id}"
+                }
+            )
+
+    # Enforce strictly positive scale to prevent homography projection failure
+    if req.transform.scale <= 0.0:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "E3003",
+                "message": f"Scale must be strictly positive (greater than 0.0)"
+            }
+        )
 
     transform_options = {
         "x": req.transform.x,
@@ -272,6 +348,23 @@ def render_template_mockup(req: RenderRequest):
         "color_correct": req.export.color_correct,
         "feather_radius": req.export.feather_radius
     }
+
+    # Track warnings for the client
+    warnings = []
+
+    # Enforce design image resolution limits with warnings instead of failing
+    min_res = metadata.get("min_upload_resolution_px", [300, 300])
+    rec_res = metadata.get("recommended_design_resolution_px", [1500, 1500])
+    dh, dw = design_img.shape[:2]
+
+    if dw < min_res[0] or dh < min_res[1]:
+        warnings.append(
+            f"The uploaded design's resolution ({dw}x{dh}px) is below the minimum recommended resolution ({min_res[0]}x{min_res[1]}px) for this template, which may result in visual pixelation."
+        )
+    elif dw < rec_res[0] or dh < rec_res[1]:
+        warnings.append(
+            f"For optimal visual quality, a higher resolution design of at least {rec_res[0]}x{rec_res[1]}px is recommended. Current: {dw}x{dh}px."
+        )
 
     try:
         rendered = render_mockup(template_folder, design_img, transform_options, export_options)
@@ -306,7 +399,8 @@ def render_template_mockup(req: RenderRequest):
         "job_id": job_id,
         "status": "completed",
         "output_url": f"/api/render/{job_id}/download",
-        "created_at": datetime.utcnow().isoformat()
+        "created_at": datetime.utcnow().isoformat(),
+        "warnings": warnings
     }
 
 @app.get("/api/render/{job_id}/download")

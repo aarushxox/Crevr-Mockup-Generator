@@ -83,6 +83,10 @@ def ingest_raw_mockup(base_path, category, subtype, label, fold_intensity=15):
         mask[cy1:cy2, cx1:cx2] = 255
         corners = [[cx1, cy1], [cx2, cy1], [cx2, cy2], [cx1, cy2]]
 
+    # Validate mask and corners
+    if not np.any(mask) or len(corners) != 4:
+        raise ValueError("Design zone mask is empty or corners are not exactly 4. Template ingestion failed and is flagged for human review.")
+
     # 2. Generate displacement map from base image's high frequency details (grayscale folds)
     bilateral = cv2.bilateralFilter(gray, 9, 75, 75)
     displacement = cv2.normalize(bilateral, None, 50, 205, cv2.NORM_MINMAX)
