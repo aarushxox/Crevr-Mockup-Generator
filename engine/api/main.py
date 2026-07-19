@@ -3,7 +3,7 @@ import json
 import uuid
 import sqlite3
 import base64
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -297,7 +297,7 @@ def render_template_mockup(req: RenderRequest):
     c = conn.cursor()
     c.execute(
         "INSERT INTO history (id, template_id, design_id, created_at, output_path) VALUES (?, ?, ?, ?, ?)",
-        (job_id, req.template_id, req.design_id, datetime.utcnow().isoformat(), output_path)
+        (job_id, req.template_id, req.design_id, datetime.now(timezone.utc).isoformat(), output_path)
     )
     conn.commit()
     conn.close()
@@ -306,7 +306,7 @@ def render_template_mockup(req: RenderRequest):
         "job_id": job_id,
         "status": "completed",
         "output_url": f"/api/render/{job_id}/download",
-        "created_at": datetime.utcnow().isoformat()
+        "created_at": datetime.now(timezone.utc).isoformat()
     }
 
 @app.get("/api/render/{job_id}/download")
