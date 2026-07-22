@@ -207,7 +207,7 @@ app.post('/api/templates/ingest', upload.single('file'), (req, res) => {
   postData.push(req.file.buffer);
   postData.push(Buffer.from(`\r\n`));
 
-  const fields = ['id', 'category', 'subtype', 'label', 'fold_intensity'];
+  const fields = ['id', 'category', 'subtype', 'label', 'fold_intensity', 'physical_size_mm', 'target_dpi'];
   for (const f of fields) {
     if (req.body[f]) {
       postData.push(Buffer.from(`--${boundary}\r\n`));

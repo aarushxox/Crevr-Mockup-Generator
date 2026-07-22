@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import json
 import os
+import re
 
 def clean_mask(mask):
     """
@@ -12,7 +13,7 @@ def clean_mask(mask):
     opened = cv2.morphologyEx(closed, cv2.MORPH_OPEN, kernel)
     return opened
 
-def ingest_raw_mockup(base_path, category, subtype, label, fold_intensity=15):
+def ingest_raw_mockup(base_path, category, subtype, label, fold_intensity=15, physical_size_mm=None, target_dpi=300):
     """
     Ingestion Pipeline to pre-process raw mockup images into fully formed templates.
     Produces base.png, mask.png, displacement.png, lighting.png, and metadata.json.
@@ -83,6 +84,10 @@ def ingest_raw_mockup(base_path, category, subtype, label, fold_intensity=15):
         mask[cy1:cy2, cx1:cx2] = 255
         corners = [[cx1, cy1], [cx2, cy1], [cx2, cy2], [cx1, cy2]]
 
+    # Strict check: fail loudly if corners is not exactly 4 points
+    if len(corners) != 4:
+        raise ValueError("Corner detection did not yield exactly 4 points.")
+
     # 2. Generate displacement map from base image's high frequency details (grayscale folds)
     bilateral = cv2.bilateralFilter(gray, 9, 75, 75)
     displacement = cv2.normalize(bilateral, None, 50, 205, cv2.NORM_MINMAX)
@@ -95,10 +100,43 @@ def ingest_raw_mockup(base_path, category, subtype, label, fold_intensity=15):
     if "laptop" in base_path:
         lighting = np.ones_like(gray) * 255
 
+    # 4. Calculate print margins
+    if isinstance(physical_size_mm, str):
+        parts = re.findall(r"\d+\.?\d*", physical_size_mm)
+        if len(parts) == 2:
+            physical_size_mm = [float(parts[0]), float(parts[1])]
+        else:
+            physical_size_mm = [400.0, 500.0]  # default fallback
+    elif not physical_size_mm:
+        # default fallback physical size
+        physical_size_mm = [400.0, 500.0]
+
+    corners_np = np.array(corners)
+    min_x, min_y = corners_np.min(axis=0)
+    max_x, max_y = corners_np.max(axis=0)
+
+    margin_left_px = min_x
+    margin_top_px = min_y
+    margin_right_px = w - max_x
+    margin_bottom_px = h - max_y
+
+    scale_x = physical_size_mm[0] / w
+    scale_y = physical_size_mm[1] / h
+
+    print_margins = {
+        "left": round(margin_left_px * scale_x, 2),
+        "right": round(margin_right_px * scale_x, 2),
+        "top": round(margin_top_px * scale_y, 2),
+        "bottom": round(margin_bottom_px * scale_y, 2)
+    }
+
     return {
         "base": img,
         "mask": mask,
         "displacement": displacement,
         "lighting": lighting,
-        "corners": corners
+        "corners": corners,
+        "print_margins": print_margins,
+        "physical_size_mm": physical_size_mm,
+        "target_dpi": int(target_dpi)
     }

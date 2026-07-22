@@ -3,6 +3,8 @@ import json
 import uuid
 import sqlite3
 import base64
+import re
+import io
 from datetime import datetime
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query
 from fastapi.responses import FileResponse, JSONResponse
@@ -11,6 +13,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 import cv2
 import numpy as np
+from PIL import Image, ImageOps
 
 from engine.pipeline.render import render_mockup
 from engine.pipeline.ingest import ingest_raw_mockup, clean_mask
@@ -141,22 +144,35 @@ async def upload_design(file: UploadFile = File(...)):
     if len(content) > 25 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="Decompression/file size exceeds 25MB limit")
 
-    header = content[:12]
-    is_png = header.startswith(b"\x89PNG\r\n\x1a\n")
-    is_jpg = header.startswith(b"\xff\xd8\xff")
-    is_webp = b"WEBP" in header
+    try:
+        # Load with PIL for signature and integrity verification
+        pil_img = Image.open(io.BytesIO(content))
+        pil_img.verify()  # Verifies the file is not corrupt
 
-    if not (is_png or is_jpg or is_webp):
-        raise HTTPException(status_code=400, detail="Unsupported or corrupt image signature. Please upload PNG, JPG, or WebP.")
+        # Now reopen since verify() closes the file/stream
+        pil_img = Image.open(io.BytesIO(content))
 
-    nparr = np.frombuffer(content, np.uint8)
-    img = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
-    if img is None:
-        raise HTTPException(status_code=400, detail="Image corrupt or undecodable.")
+        # Enforce 64 Megapixel limit (8000x8000 = 64,000,000 pixels) to prevent decompression bombs
+        w, h = pil_img.size
+        if w * h > 64 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="Image resolution exceeds 64 Megapixels limit to protect against decompression bombs.")
 
-    h, w = img.shape[:2]
-    if w > 8000 or h > 8000:
-        raise HTTPException(status_code=400, detail="Image dimensions exceed 8000x8000 pixels limit")
+        # Strip EXIF metadata and apply orientation
+        pil_img = ImageOps.exif_transpose(pil_img)
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Unsupported or corrupt image signature. Please upload PNG, JPG, or WebP. Details: {str(e)}")
+
+    # Convert PIL Image to numpy array (OpenCV uses BGR/BGRA)
+    if pil_img.mode in ("RGBA", "LA") or (pil_img.mode == "P" and "transparency" in pil_img.info):
+        pil_img = pil_img.convert("RGBA")
+        img = np.array(pil_img)
+        img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGRA)
+    else:
+        pil_img = pil_img.convert("RGB")
+        img = np.array(pil_img)
+        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
 
     design_id = str(uuid.uuid4())
     ext = "png" if img.shape[2] == 4 else "jpg"
@@ -249,6 +265,22 @@ def render_template_mockup(req: RenderRequest):
     if not os.path.exists(template_folder):
         raise HTTPException(status_code=404, detail="Mockup template not found")
 
+    # Load metadata to get category and limits
+    meta_path = os.path.join(template_folder, "metadata.json")
+    with open(meta_path, "r") as f:
+        meta = json.load(f)
+
+    # 1. Enforce scale validation
+    if req.transform.scale <= 0:
+        raise HTTPException(status_code=400, detail="Scale must be a positive non-zero value.")
+
+    # 2. Enforce rotation permissions and limits
+    rotation = req.transform.rotation
+    rotation_limits = meta.get("rotation_limits_deg")
+    if rotation_limits and len(rotation_limits) == 2 and (rotation_limits[0] != 0 or rotation_limits[1] != 0):
+        clamped_rotation = max(rotation_limits[0], min(rotation_limits[1], rotation))
+        rotation = clamped_rotation
+
     design_img = None
     for ext in ["png", "jpg", "jpeg", "webp"]:
         path = os.path.join(UPLOAD_DIR, f"{req.design_id}.{ext}")
@@ -259,11 +291,35 @@ def render_template_mockup(req: RenderRequest):
     if design_img is None:
         raise HTTPException(status_code=404, detail="Design file not found")
 
+    warnings_list = []
+
+    # 3. Detect missing alpha channel for apparel designs
+    category = meta.get("category", "")
+    has_alpha = design_img.shape[2] == 4
+    if category == "apparel":
+        is_fully_opaque = True
+        if has_alpha:
+            alpha_channel = design_img[:, :, 3]
+            if not np.all(alpha_channel == 255):
+                is_fully_opaque = False
+        if is_fully_opaque:
+            warnings_list.append("Transparency was expected for apparel mockups. The design upload is fully opaque; consider background removal to avoid a solid background block.")
+
+    # 4. Detect low resolution designs
+    hd, wd = design_img.shape[:2]
+    min_res = meta.get("min_upload_resolution_px", [300, 300])
+    rec_res = meta.get("recommended_design_resolution_px", [1500, 1500])
+
+    if wd < min_res[0] or hd < min_res[1]:
+        warnings_list.append(f"Design resolution ({wd}x{hd}px) is extremely low. Minimum required is {min_res[0]}x{min_res[1]}px. Visual quality may be degraded.")
+    elif wd < rec_res[0] or hd < rec_res[1]:
+        warnings_list.append(f"Design resolution ({wd}x{hd}px) is lower than recommended ({rec_res[0]}x{rec_res[1]}px). Visual quality may be reduced.")
+
     transform_options = {
         "x": req.transform.x,
         "y": req.transform.y,
         "scale": req.transform.scale,
-        "rotation": req.transform.rotation
+        "rotation": rotation
     }
 
     export_options = {
@@ -274,7 +330,8 @@ def render_template_mockup(req: RenderRequest):
     }
 
     try:
-        rendered = render_mockup(template_folder, design_img, transform_options, export_options)
+        rendered, render_warnings = render_mockup(template_folder, design_img, transform_options, export_options)
+        warnings_list.extend(render_warnings)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Pipeline rendering failed: {str(e)}")
 
@@ -306,7 +363,8 @@ def render_template_mockup(req: RenderRequest):
         "job_id": job_id,
         "status": "completed",
         "output_url": f"/api/render/{job_id}/download",
-        "created_at": datetime.utcnow().isoformat()
+        "created_at": datetime.utcnow().isoformat(),
+        "warnings": warnings_list
     }
 
 @app.get("/api/render/{job_id}/download")
@@ -373,7 +431,9 @@ async def ingest_template(
     category: str = Form(...),
     subtype: str = Form(...),
     label: str = Form(...),
-    fold_intensity: int = Form(15)
+    fold_intensity: int = Form(15),
+    physical_size_mm: Optional[str] = Form(None),
+    target_dpi: int = Form(300)
 ):
     """
     (Admin API) Upload and ingest a brand new blank product mockup photo.
@@ -384,13 +444,24 @@ async def ingest_template(
     with open(temp_path, "wb") as f:
         f.write(content)
 
+    parsed_physical_size = None
+    if physical_size_mm:
+        try:
+            parsed_physical_size = json.loads(physical_size_mm)
+        except Exception:
+            parts = re.findall(r"\d+\.?\d*", physical_size_mm)
+            if len(parts) == 2:
+                parsed_physical_size = [float(parts[0]), float(parts[1])]
+
     try:
         result = ingest_raw_mockup(
             base_path=temp_path,
             category=category,
             subtype=subtype,
             label=label,
-            fold_intensity=fold_intensity
+            fold_intensity=fold_intensity,
+            physical_size_mm=parsed_physical_size,
+            target_dpi=target_dpi
         )
 
         template_dir = os.path.join("templates", id)
@@ -422,7 +493,10 @@ async def ingest_template(
             "export_default_format": "png",
             "export_max_resolution_px": [2000, 2000],
             "created_at": "2026-07-15",
-            "engine_version": "1.0"
+            "engine_version": "1.0",
+            "physical_size_mm": result["physical_size_mm"],
+            "target_dpi": result["target_dpi"],
+            "print_margins": result["print_margins"]
         }
 
         with open(os.path.join(template_dir, "metadata.json"), "w") as f:
