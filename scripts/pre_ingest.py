@@ -11,7 +11,9 @@ def run_pre_ingest():
             "category": "tech",
             "subtype": "laptop",
             "label": "MacBook Pro — Front View, Clean Desk",
-            "fold_intensity": 0
+            "fold_intensity": 0,
+            "physical_size_mm": [500.0, 350.0],
+            "target_dpi": 300
         },
         {
             "path": "assets/mockup_t_shirt.png",
@@ -19,7 +21,9 @@ def run_pre_ingest():
             "category": "apparel",
             "subtype": "t-shirt",
             "label": "Classic White T-Shirt — Flat Lay",
-            "fold_intensity": 12
+            "fold_intensity": 12,
+            "physical_size_mm": [400.0, 500.0],
+            "target_dpi": 300
         },
         {
             "path": "assets/mockup_t-shirt-2.png",
@@ -27,7 +31,9 @@ def run_pre_ingest():
             "category": "apparel",
             "subtype": "t-shirt",
             "label": "White T-Shirt — Studio Portrait",
-            "fold_intensity": 18
+            "fold_intensity": 18,
+            "physical_size_mm": [400.0, 500.0],
+            "target_dpi": 300
         }
     ]
 
@@ -40,7 +46,9 @@ def run_pre_ingest():
             category=asset["category"],
             subtype=asset["subtype"],
             label=asset["label"],
-            fold_intensity=asset["fold_intensity"]
+            fold_intensity=asset["fold_intensity"],
+            physical_size_mm=asset["physical_size_mm"],
+            target_dpi=asset["target_dpi"]
         )
 
         template_dir = f"templates/{asset['id']}"
@@ -74,7 +82,10 @@ def run_pre_ingest():
             "export_default_format": "png",
             "export_max_resolution_px": [4096, 4096] if asset["id"] == "laptop_macbook_front_01" else [2000, 2000],
             "created_at": "2026-07-15",
-            "engine_version": "1.0"
+            "engine_version": "1.0",
+            "physical_size_mm": result["physical_size_mm"],
+            "target_dpi": result["target_dpi"],
+            "print_margins": result["print_margins"]
         }
 
         with open(os.path.join(template_dir, "metadata.json"), "w") as f:

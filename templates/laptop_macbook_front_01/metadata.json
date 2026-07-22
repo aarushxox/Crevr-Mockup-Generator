@@ -55,5 +55,16 @@
     4096
   ],
   "created_at": "2026-07-15",
-  "engine_version": "1.0"
+  "engine_version": "1.0",
+  "physical_size_mm": [
+    500.0,
+    350.0
+  ],
+  "target_dpi": 300,
+  "print_margins": {
+    "left": 49.44,
+    "right": 148.8,
+    "top": 62.63,
+    "bottom": 130.74
+  }
 }
