@@ -26,6 +26,12 @@
     ]
   ],
   "fold_intensity": 0,
+  "physical_size_mm": [
+    357.8,
+    229.0
+  ],
+  "target_dpi": 300,
+  "print_margin_px": 150,
   "allow_rotation": true,
   "rotation_limits_deg": [
     0,
