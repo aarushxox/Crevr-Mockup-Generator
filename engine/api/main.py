@@ -11,6 +11,8 @@ from pydantic import BaseModel
 from typing import Optional, List
 import cv2
 import numpy as np
+from PIL import Image, ImageOps
+import io
 
 from engine.pipeline.render import render_mockup
 from engine.pipeline.ingest import ingest_raw_mockup, clean_mask
@@ -149,14 +151,41 @@ async def upload_design(file: UploadFile = File(...)):
     if not (is_png or is_jpg or is_webp):
         raise HTTPException(status_code=400, detail="Unsupported or corrupt image signature. Please upload PNG, JPG, or WebP.")
 
-    nparr = np.frombuffer(content, np.uint8)
-    img = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
-    if img is None:
+    # 1. PIL verification of signature and corruption
+    try:
+        img_pil = Image.open(io.BytesIO(content))
+        img_pil.verify()
+    except Exception:
         raise HTTPException(status_code=400, detail="Image corrupt or undecodable.")
 
-    h, w = img.shape[:2]
+    # 2. Re-open and check size limits to prevent decompression bombs (64 Megapixels limit)
+    try:
+        img_pil = Image.open(io.BytesIO(content))
+        # 3. Strip metadata and apply EXIF orientation
+        img_pil = ImageOps.exif_transpose(img_pil)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Image processing/transpose failed.")
+
+    w, h = img_pil.size
+    if w * h > 64 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Image dimensions exceed 64 Megapixel limit")
     if w > 8000 or h > 8000:
         raise HTTPException(status_code=400, detail="Image dimensions exceed 8000x8000 pixels limit")
+
+    # Convert PIL Image back to OpenCV NumPy format
+    img_np = np.array(img_pil)
+    if img_pil.mode == "RGBA":
+        img = cv2.cvtColor(img_np, cv2.COLOR_RGBA2BGRA)
+    elif img_pil.mode == "RGB":
+        img = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+    elif img_pil.mode == "LA":
+        img = cv2.cvtColor(img_np, cv2.COLOR_RGBA2BGRA)
+    elif img_pil.mode == "L":
+        img = cv2.cvtColor(img_np, cv2.COLOR_GRAY2BGR)
+    else:
+        img_pil = img_pil.convert("RGBA")
+        img_np = np.array(img_pil)
+        img = cv2.cvtColor(img_np, cv2.COLOR_RGBA2BGRA)
 
     design_id = str(uuid.uuid4())
     ext = "png" if img.shape[2] == 4 else "jpg"
@@ -274,7 +303,7 @@ def render_template_mockup(req: RenderRequest):
     }
 
     try:
-        rendered = render_mockup(template_folder, design_img, transform_options, export_options)
+        rendered, warnings = render_mockup(template_folder, design_img, transform_options, export_options)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Pipeline rendering failed: {str(e)}")
 
@@ -306,7 +335,8 @@ def render_template_mockup(req: RenderRequest):
         "job_id": job_id,
         "status": "completed",
         "output_url": f"/api/render/{job_id}/download",
-        "created_at": datetime.utcnow().isoformat()
+        "created_at": datetime.utcnow().isoformat(),
+        "warnings": warnings
     }
 
 @app.get("/api/render/{job_id}/download")
@@ -373,25 +403,47 @@ async def ingest_template(
     category: str = Form(...),
     subtype: str = Form(...),
     label: str = Form(...),
-    fold_intensity: int = Form(15)
+    fold_intensity: int = Form(15),
+    physical_size_mm: Optional[str] = Form(None),
+    target_dpi: Optional[int] = Form(None)
 ):
     """
     (Admin API) Upload and ingest a brand new blank product mockup photo.
     Runs the automated CV segmentation and analytical pipeline.
     """
+    parsed_physical_size = None
+    if physical_size_mm:
+        try:
+            parsed_physical_size = json.loads(physical_size_mm)
+            if not isinstance(parsed_physical_size, list) or len(parsed_physical_size) != 2:
+                raise ValueError()
+            parsed_physical_size = [float(x) for x in parsed_physical_size]
+        except Exception:
+            try:
+                parsed_physical_size = [float(x.strip()) for x in physical_size_mm.split(",")]
+                if len(parsed_physical_size) != 2:
+                    raise ValueError()
+            except Exception:
+                raise HTTPException(status_code=400, detail="physical_size_mm must be a list of 2 numbers, e.g. [357.8, 229.0] or '357.8,229.0'")
+
     content = await file.read()
     temp_path = f"data/temp_{uuid.uuid4()}.png"
     with open(temp_path, "wb") as f:
         f.write(content)
 
     try:
-        result = ingest_raw_mockup(
-            base_path=temp_path,
-            category=category,
-            subtype=subtype,
-            label=label,
-            fold_intensity=fold_intensity
-        )
+        try:
+            result = ingest_raw_mockup(
+                base_path=temp_path,
+                category=category,
+                subtype=subtype,
+                label=label,
+                fold_intensity=fold_intensity,
+                physical_size_mm=parsed_physical_size,
+                target_dpi=target_dpi
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
         template_dir = os.path.join("templates", id)
         os.makedirs(template_dir, exist_ok=True)
@@ -412,6 +464,9 @@ async def ingest_template(
             "lighting_image": "lighting.png",
             "design_zone_corners": result["corners"],
             "fold_intensity": fold_intensity,
+            "physical_size_mm": parsed_physical_size,
+            "target_dpi": target_dpi,
+            "print_margin_px": result["print_margin_px"],
             "allow_rotation": True,
             "rotation_limits_deg": [-15, 15] if category == "apparel" else [0, 0],
             "allow_perspective_adjust": False,

@@ -11,7 +11,9 @@ def run_pre_ingest():
             "category": "tech",
             "subtype": "laptop",
             "label": "MacBook Pro — Front View, Clean Desk",
-            "fold_intensity": 0
+            "fold_intensity": 0,
+            "physical_size_mm": [357.8, 229.0],
+            "target_dpi": 300
         },
         {
             "path": "assets/mockup_t_shirt.png",
@@ -19,7 +21,9 @@ def run_pre_ingest():
             "category": "apparel",
             "subtype": "t-shirt",
             "label": "Classic White T-Shirt — Flat Lay",
-            "fold_intensity": 12
+            "fold_intensity": 12,
+            "physical_size_mm": [500.0, 700.0],
+            "target_dpi": 300
         },
         {
             "path": "assets/mockup_t-shirt-2.png",
@@ -27,7 +31,9 @@ def run_pre_ingest():
             "category": "apparel",
             "subtype": "t-shirt",
             "label": "White T-Shirt — Studio Portrait",
-            "fold_intensity": 18
+            "fold_intensity": 18,
+            "physical_size_mm": [500.0, 700.0],
+            "target_dpi": 300
         }
     ]
 
@@ -40,7 +46,9 @@ def run_pre_ingest():
             category=asset["category"],
             subtype=asset["subtype"],
             label=asset["label"],
-            fold_intensity=asset["fold_intensity"]
+            fold_intensity=asset["fold_intensity"],
+            physical_size_mm=asset["physical_size_mm"],
+            target_dpi=asset["target_dpi"]
         )
 
         template_dir = f"templates/{asset['id']}"
@@ -64,6 +72,9 @@ def run_pre_ingest():
             "lighting_image": "lighting.png",
             "design_zone_corners": result["corners"],
             "fold_intensity": asset["fold_intensity"],
+            "physical_size_mm": asset["physical_size_mm"],
+            "target_dpi": asset["target_dpi"],
+            "print_margin_px": result["print_margin_px"],
             "allow_rotation": True,
             "rotation_limits_deg": [-15, 15] if asset["category"] == "apparel" else [0, 0],
             "allow_perspective_adjust": False,

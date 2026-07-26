@@ -17,11 +17,52 @@ def render_mockup(template_folder, design_image, transform_options, export_optio
     with open(metadata_path, "r") as f:
         metadata = json.load(f)
 
+    warnings = []
+    physical_size_mm = metadata.get("physical_size_mm")
+    dpi = export_options.get("dpi", 300)
+
     # Load template assets
-    base_image = cv2.imread(os.path.join(template_folder, metadata["base_image"]))
-    mask_image = cv2.imread(os.path.join(template_folder, metadata["mask_image"]), cv2.IMREAD_GRAYSCALE)
-    displacement_image = cv2.imread(os.path.join(template_folder, metadata["displacement_image"]), cv2.IMREAD_GRAYSCALE)
-    lighting_image = cv2.imread(os.path.join(template_folder, metadata["lighting_image"]))
+    base_image_orig = cv2.imread(os.path.join(template_folder, metadata["base_image"]))
+    h_orig, w_orig = base_image_orig.shape[:2]
+
+    if physical_size_mm is not None:
+        target_w = int(physical_size_mm[0] / 25.4 * dpi)
+        target_h = int(physical_size_mm[1] / 25.4 * dpi)
+
+        max_res = metadata.get("export_max_resolution_px", [3000, 3000])
+        if target_w > max_res[0] or target_h > max_res[1]:
+            scale_f = min(max_res[0] / target_w, max_res[1] / target_h)
+            clamped_w = int(target_w * scale_f)
+            clamped_h = int(target_h * scale_f)
+            warnings.append(f"Output resolution clamped to maximum allowable limit: {clamped_w}x{clamped_h}")
+            target_w, target_h = clamped_w, clamped_h
+
+        # Scale all assets
+        base_image = cv2.resize(base_image_orig, (target_w, target_h), interpolation=cv2.INTER_CUBIC)
+
+        mask_raw = cv2.imread(os.path.join(template_folder, metadata["mask_image"]), cv2.IMREAD_GRAYSCALE)
+        mask_image = cv2.resize(mask_raw, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+
+        disp_raw = cv2.imread(os.path.join(template_folder, metadata["displacement_image"]), cv2.IMREAD_GRAYSCALE)
+        displacement_image = cv2.resize(disp_raw, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+
+        light_raw = cv2.imread(os.path.join(template_folder, metadata["lighting_image"]))
+        lighting_image = cv2.resize(light_raw, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+
+        scale_x = target_w / w_orig
+        scale_y = target_h / h_orig
+
+        orig_corners = np.array(metadata["design_zone_corners"], dtype=np.float32)
+        dst_corners = orig_corners.copy()
+        dst_corners[:, 0] *= scale_x
+        dst_corners[:, 1] *= scale_y
+    else:
+        base_image = base_image_orig
+        mask_image = cv2.imread(os.path.join(template_folder, metadata["mask_image"]), cv2.IMREAD_GRAYSCALE)
+        displacement_image = cv2.imread(os.path.join(template_folder, metadata["displacement_image"]), cv2.IMREAD_GRAYSCALE)
+        lighting_image = cv2.imread(os.path.join(template_folder, metadata["lighting_image"]))
+        target_w, target_h = w_orig, h_orig
+        dst_corners = np.array(metadata["design_zone_corners"], dtype=np.float32)
 
     h_base, w_base = base_image.shape[:2]
 
@@ -45,7 +86,6 @@ def render_mockup(template_folder, design_image, transform_options, export_optio
     processed_design[:, :, 3] = design_alpha
 
     # 2. Fit and Transform into the design zone corners
-    dst_corners = np.array(metadata["design_zone_corners"], dtype=np.float32)
     hd, wd = processed_design.shape[:2]
     src_corners = np.array([[0, 0], [wd, 0], [wd, hd], [0, hd]], dtype=np.float32)
 
@@ -68,6 +108,14 @@ def render_mockup(template_folder, design_image, transform_options, export_optio
     ty = transform_options.get("y", 0.0)
     scale = transform_options.get("scale", 1.0)
     rotation = transform_options.get("rotation", 0.0)
+
+    # Adjust translations and scales for physical sizing
+    if physical_size_mm is not None:
+        tx_scale = target_w / w_orig
+        ty_scale = target_h / h_orig
+        tx *= tx_scale
+        ty *= ty_scale
+        # scale is dimensionless ratio, so keep it as is
 
     R = cv2.getRotationMatrix2D((cx, cy), rotation, scale)
     R[0, 2] += tx
@@ -111,4 +159,4 @@ def render_mockup(template_folder, design_image, transform_options, export_optio
         scale_f = min(max_res[0] / curr_w, max_res[1] / curr_h)
         composited_result = cv2.resize(composited_result, (0, 0), fx=scale_f, fy=scale_f, interpolation=cv2.INTER_CUBIC)
 
-    return composited_result
+    return composited_result, warnings
