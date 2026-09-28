@@ -39,9 +39,10 @@ const upload = multer({
 
 // Proxy and utility helper to talk to python compositing engine
 function forwardToEngine(options, postData = null, res) {
+  const engineUrl = new URL(ENGINE_URL);
   const reqOpts = {
-    hostname: '127.0.0.1',
-    port: 8001,
+    hostname: engineUrl.hostname,
+    port: engineUrl.port,
     path: options.path,
     method: options.method,
     headers: options.headers || {}
